@@ -1,0 +1,26 @@
+{
+  "name": "qrb-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Quantum-Resistant Blockchain Framework for Secure AI Model Distribution and Provenance",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node test/e2e.mjs",
+    "test:render": "esbuild test/render.jsx --bundle --platform=node --format=esm --outfile=test/.render.build.mjs --log-level=error --external:react --external:react-dom && node test/.render.build.mjs",
+    "test:all": "npm run test && npm run test:render"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.9.1",
+    "@noble/hashes": "^1.8.0",
+    "@noble/post-quantum": "^0.4.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.7"
+  }
+}
