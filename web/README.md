@@ -79,6 +79,26 @@ These follow objective O4 — document the boundary rather than overstate it.
 - **No live Fabric peer, Hardhat node or Kubo daemon.** State lives in memory and resets on
   reload.
 
+## Design system
+
+The UI implements `templates/stitch_quantum_resistant_model_security_dashboard/quantum_resistant_cryptographic_workbench/DESIGN.md`
+— "technical instrument brutalism + deep terminal minimalism". Accent channels are
+mathematically segregated: cyan `#6ee7ff` for data and hashes, violet `#a78bfa` for
+post-quantum primitives only, green/amber/rose for pass / classical exposure / critical.
+Radii are 10px panels, 6px controls, 4px chips; pill radii are prohibited by the system.
+Depth comes from 1px borders and tonal stepping, never drop shadows.
+
+Two notes on the template. Four of its five screenshots failed to export from Stitch
+(28-byte `<FIFE Image failed to fetch>` placeholders); only `register_model_qrb_pipeline`
+survived, and that page follows it closely while the rest were built from `DESIGN.md`.
+The mockup's placeholder content also says ML-DSA-87 / Category 5 / ML-KEM-1024 — that is
+Stitch filler, so the visual system was taken from it but the parameters come from the
+report (ML-DSA-65 / Category 3 / ML-KEM-768).
+
 ## Stack
 
 React 18 · Vite 6 · @noble/post-quantum · @noble/curves · @noble/hashes. No backend.
+Inter + JetBrains Mono + Material Symbols from Google Fonts.
+
+See [`../PROJECT_GUIDE.txt`](../PROJECT_GUIDE.txt) for the full project explanation,
+implementation status, roadmap and a step-by-step demo script.

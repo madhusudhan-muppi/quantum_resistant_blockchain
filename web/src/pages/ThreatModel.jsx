@@ -1,12 +1,11 @@
 import React from 'react';
-import { Panel, Badge, Alert, Formula } from '../components/ui.jsx';
+import {
+  Panel, PageHead, Academic, Health, Icon, Alert, Stat, KVMatrix,
+} from '../components/ui.jsx';
 
 /**
- * STRIDE assessment — Table 3.3, and the stated limitation of Section 3.10.
- *
- * Two risks are deliberately rated MEDIUM rather than argued down to LOW. The
- * report's objective O4 is to document the boundary of the quantum guarantee
- * rather than overstate it, so this page reproduces that boundary plainly.
+ * STRIDE assessment — Table 3.3, plus the stated limitation of Section 3.10.
+ * Two risks are rated MEDIUM deliberately rather than argued down to LOW.
  */
 const STRIDE = [
   {
@@ -48,17 +47,25 @@ const STRIDE = [
 ];
 
 export default function ThreatModel() {
+  const medium = STRIDE.filter((r) => r.residual === 'MEDIUM').length;
+
   return (
     <div>
-      <div className="page-head">
-        <h1 className="page-title">Threat model and residual risk</h1>
-        <p className="page-sub">
-          Two risks are rated MEDIUM deliberately rather than argued down to LOW. Documenting the
-          boundary of the guarantee is objective O4.
-        </p>
-      </div>
+      <PageHead
+        section="3.8 THREAT MODEL & RESIDUAL RISK"
+        standard="STRIDE ASSESSMENT"
+        id="0x3f07_stride"
+        title="Threat Model & Residual Risk"
+        stats={[
+          { label: 'Residual LOW', value: STRIDE.length - medium, tone: 'valid', sub: 'mitigated' },
+          { label: 'Residual MEDIUM', value: medium, tone: 'classical', sub: 'deliberately not argued down' },
+        ]}
+      >
+        Two risks are rated MEDIUM deliberately rather than argued down to LOW. Documenting the
+        boundary of the guarantee is objective O4.
+      </PageHead>
 
-      <Panel title="STRIDE assessment" section="3.8">
+      <Panel icon="gpp_maybe" title="STRIDE Assessment" chip={<Academic>3.8 Table 3.3</Academic>} flush>
         <table className="table">
           <thead>
             <tr>
@@ -70,12 +77,12 @@ export default function ThreatModel() {
           </thead>
           <tbody>
             {STRIDE.map((r) => (
-              <tr key={r.cls} className={r.residual === 'MEDIUM' ? 'highlight' : ''}>
-                <td style={{ color: 'var(--text)', whiteSpace: 'nowrap' }}>{r.cls}</td>
+              <tr key={r.cls} className={r.residual === 'MEDIUM' ? 'selected' : ''}>
+                <td style={{ whiteSpace: 'nowrap' }}><strong>{r.cls}</strong></td>
                 <td>{r.threat}</td>
-                <td>{r.control}</td>
+                <td style={{ fontSize: 11.5 }}>{r.control}</td>
                 <td>
-                  <Badge tone={r.residual === 'LOW' ? 'ok' : 'warn'}>{r.residual}</Badge>
+                  <Health state={r.residual === 'LOW' ? 'pass' : 'caution'}>{r.residual}</Health>
                 </td>
               </tr>
             ))}
@@ -83,64 +90,61 @@ export default function ThreatModel() {
         </table>
       </Panel>
 
-      <Alert tone="warn" title="Stated limitation — the anchor transaction is not quantum-safe">
-        The Ethereum anchoring transaction is authorised by <code>msg.sender</code> and therefore
-        signed with secp256k1. A quantum adversary who recovers a publisher's externally owned
-        account key can write anchors — even though they cannot forge the ML-DSA signature those
-        anchors reference. Forged anchors therefore <strong>fail verification but can still be
-        committed</strong>. This is a denial-of-service and confusion risk, not a forgery-of-provenance
-        risk, and the framework does not claim otherwise.
+      <Alert tone="caution" icon="warning" title="Stated limitation — the anchor transaction is not quantum-safe">
+        The Ethereum anchoring transaction is authorised by <span className="mono">msg.sender</span>{' '}
+        and therefore signed with secp256k1. A quantum adversary who recovers a publisher's
+        externally owned account key can write anchors — even though they cannot forge the ML-DSA
+        signature those anchors reference. Forged anchors therefore{' '}
+        <strong>fail verification but can still be committed</strong>. That is a denial-of-service
+        and confusion risk, not a forgery-of-provenance risk, and the framework does not claim
+        otherwise.
       </Alert>
 
       <div className="grid-2">
-        <Panel title="Closing the gap" section="3.10">
+        <Panel icon="construction" title="Closing The Gap" chip={<Academic>3.10 Future Work</Academic>}>
           <p className="panel-note">
             Two directions are identified for continued work. Neither is claimed as implemented.
           </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <div>
-              <Badge tone="quantum">ERC-4337</Badge>
-              <p className="panel-note" style={{ marginTop: 8, marginBottom: 0 }}>
-                A smart account with an ML-DSA verifier module, removing the dependency on an
-                externally owned account signed with secp256k1.
-              </p>
+          <div className="cell" style={{ marginBottom: 'var(--s-sm)' }}>
+            <div style={{ marginBottom: 6 }}><Health state="pqc">ERC-4337</Health></div>
+            <div className="t-body-sm" style={{ color: 'var(--text-2)' }}>
+              A smart account carrying an ML-DSA verifier module, removing the dependency on an
+              externally owned account signed with secp256k1.
             </div>
-            <div>
-              <Badge tone="quantum">zk-SNARK</Badge>
-              <p className="panel-note" style={{ marginTop: 8, marginBottom: 0 }}>
-                Prove correct off-chain lattice verification so the EVM checks only a succinct
-                proof, avoiding the prohibitive cost of ML-DSA in EVM opcodes.
-              </p>
+          </div>
+          <div className="cell">
+            <div style={{ marginBottom: 6 }}><Health state="pqc">ZK-SNARK</Health></div>
+            <div className="t-body-sm" style={{ color: 'var(--text-2)' }}>
+              Prove correct off-chain lattice verification so the EVM checks only a succinct proof,
+              avoiding the prohibitive cost of ML-DSA in EVM opcodes.
             </div>
           </div>
         </Panel>
 
-        <Panel title="Where verification actually happens" section="3.1">
+        <Panel icon="rule" title="Where Verification Actually Happens" chip={<Academic>3.1 Enforcement</Academic>}>
           <p className="panel-note">
             The distinction the framework rests on: Fabric enforces, Ethereum records.
           </p>
-          <Formula>
-            Fabric chaincode&nbsp;&nbsp;→ verify(ML-DSA) as endorsement condition
-            {'\n'}
-            &nbsp;&nbsp;invalid ⇒ <span style={{ color: 'var(--ok)' }}>never committed</span>
-            {'\n\n'}
-            Ethereum contract → store(bytes32 commitments)
-            {'\n'}
-            &nbsp;&nbsp;invalid ⇒ <span style={{ color: 'var(--warn)' }}>committed, detectable later</span>
-          </Formula>
-          <p className="panel-note" style={{ marginBottom: 0 }}>
-            A 3,309-byte signature check costs roughly 0.3 ms in Go with CIRCL and carries no gas
-            metering inside Fabric. The same check in EVM opcodes would be prohibitive, which is why
-            the anchor layer stores commitments and nothing more.
-          </p>
+          <div className="formula">{`Fabric chaincode  → verify(ML-DSA) as endorsement condition
+  invalid ⇒ never committed
+
+Ethereum contract → store(bytes32 commitments)
+  invalid ⇒ committed, detectable later`}</div>
+          <KVMatrix
+            rows={[
+              { k: 'Chaincode verify (Go CIRCL)', v: <span className="v-valid">≈0.3 ms, no gas metering</span> },
+              { k: 'Equivalent in EVM opcodes', v: <span className="v-critical">prohibitive</span> },
+              { k: 'Anchor stores', v: '5 packed bytes32 slots' },
+            ]}
+          />
         </Panel>
       </div>
 
-      <Panel title="Scope" section="1.5">
+      <Panel icon="fact_check" title="Scope" chip={<Academic>1.5 Scope</Academic>}>
         <div className="grid-2">
-          <div>
-            <Badge tone="ok">In scope</Badge>
-            <ul style={{ fontSize: 12.5, color: 'var(--text-dim)', paddingLeft: 18, lineHeight: 1.85 }}>
+          <div className="cell">
+            <div style={{ marginBottom: 8 }}><Health state="pass">IN SCOPE</Health></div>
+            <ul className="tight">
               <li>Fabric v2.5 network provisioning</li>
               <li>Go chaincode with embedded ML-DSA verification</li>
               <li>Solidity anchor contract — Hardhat and Sepolia</li>
@@ -150,9 +154,9 @@ export default function ThreatModel() {
               <li>Gas and latency benchmarks</li>
             </ul>
           </div>
-          <div>
-            <Badge tone="fail">Out of scope</Badge>
-            <ul style={{ fontSize: 12.5, color: 'var(--text-dim)', paddingLeft: 18, lineHeight: 1.85 }}>
+          <div className="cell">
+            <div style={{ marginBottom: 8 }}><Health state="fail">OUT OF SCOPE</Health></div>
+            <ul className="tight">
               <li>Ethereum mainnet deployment with real value</li>
               <li>FPGA/ASIC acceleration of lattice polynomial arithmetic</li>
               <li>Physical quantum hardware benchmarking</li>

@@ -6,3 +6,4 @@ dist/
 .env
 .env.local
 test/.render.build.mjs
+test/.shot.build.mjs
