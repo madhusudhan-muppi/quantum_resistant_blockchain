@@ -1,0 +1,931 @@
+================================================================================
+QRB — QUANTUM-RESISTANT BLOCKCHAIN FRAMEWORK
+Secure AI Model Distribution and Provenance
+================================================================================
+
+DA2 Project Guide
+Madhusudhan (25BCE1176) · Mahathi Shri G (25BCE5747)
+
+Source paper : DA2_QuantumResistantCryptography.pdf
+Website      : web/  (React 18 + Vite, runs on http://localhost:5173)
+Design source: web/templates/stitch_quantum_resistant_model_security_dashboard/
+
+This document has four parts:
+  PART 1 — What the project is about (plain English, then technical)
+  PART 2 — What we have implemented
+  PART 3 — What we are going to implement
+  PART 4 — Step-by-step demo script: what to present and how
+
+
+================================================================================
+PART 1 — WHAT THE PROJECT IS ABOUT
+================================================================================
+
+--------------------------------------------------------------------------------
+1.1  THE ONE-PARAGRAPH VERSION
+--------------------------------------------------------------------------------
+
+When an AI model is published, the author signs it so that anyone downloading it
+can prove two things: who made it, and that nobody altered it. Today that
+signature uses RSA or ECDSA. A sufficiently large quantum computer running
+Shor's algorithm breaks both. Our project replaces that signature with a
+quantum-safe one (NIST FIPS 204 ML-DSA-65), enforces it inside a blockchain's
+own transaction rules so a bad signature physically cannot be recorded, and
+hashes the model layer-by-layer so that if someone tampers with it we can say
+exactly which layer was changed.
+
+
+--------------------------------------------------------------------------------
+1.2  THE CORE INSIGHT — "THE IMMUTABILITY PARADOX"
+--------------------------------------------------------------------------------
+
+This is the idea that makes the project interesting, and the one to lead with
+when presenting.
+
+A blockchain is valuable because it is append-only: history cannot be rewritten.
+A blockchain also stores signatures and public keys permanently and publicly.
+
+Put those two facts together with a quantum computer and you get a trap:
+
+  Step 1 (today, 2026)  Acme Corp signs "model v1" with ECDSA. The signature and
+                        the public key are written to the ledger forever, visible
+                        to everyone, replicated across thousands of nodes.
+
+  Step 2 (2035-2040)    A Cryptographically Relevant Quantum Computer (CRQC)
+                        exists. An attacker reads Acme's public key straight off
+                        the public ledger — no hacking required, it was always
+                        public — and uses Shor's algorithm to derive the matching
+                        private key.
+
+  Step 3 (2035-2040)    The attacker signs a backdoored model with that recovered
+                        key and back-dates the provenance. The record looks like
+                        it was created in 2026, before the break.
+
+  Step 4                Nobody can fix it. Rewriting ledger history would break
+                        consensus. The forged entry is now as permanent as the
+                        genuine ones.
+
+So the property that makes a blockchain trustworthy — immutability — is exactly
+what makes the damage permanent and unrepairable. Every signature written today
+is a liability that matures when quantum computing arrives.
+
+KEY PRESENTATION LINE:
+"Every ECDSA signature on a public ledger today is a time bomb. The blockchain
+ will faithfully preserve the forgery forever."
+
+
+--------------------------------------------------------------------------------
+1.3  TWO DIFFERENT ATTACKS THAT PEOPLE CONSTANTLY CONFUSE
+--------------------------------------------------------------------------------
+
+The paper is careful about this, and examiners often probe it.
+
+  (a) HNDL — "Harvest Now, Decrypt Later"       → a CONFIDENTIALITY attack
+      The attacker records encrypted traffic today and decrypts it years later
+      once the key exchange is broken. It targets one conversation at a time.
+      DEFENCE: ML-KEM-768 (FIPS 203) to wrap the AES-256-GCM content key
+               instead of ECDH.
+
+  (b) RETROSPECTIVE FORGERY                     → an INTEGRITY attack
+      The attacker recovers a private key from a published verification key and
+      mints signatures that appear historical. Not limited to one target —
+      it poisons the entire trust chain backwards in time.
+      DEFENCE: ML-DSA-65 (FIPS 204) signatures.
+
+These are different attacks needing different primitives. A signature scheme
+does nothing for confidentiality; a KEM does nothing for forgery. The framework
+addresses both.
+
+
+--------------------------------------------------------------------------------
+1.4  WHY AI MODELS SPECIFICALLY, AND NOT JUST "FILES"
+--------------------------------------------------------------------------------
+
+AI artefacts have three properties that break normal provenance tooling:
+
+  1. THEY ARE HUGE.  A 7 GB model cannot be put on-chain. Gas costs alone would
+     be astronomical. So the artefact lives off-chain (IPFS) and only a
+     fixed-size commitment goes on-chain.
+
+  2. THEY ARE DERIVED CONSTANTLY.  Fine-tunes and LoRA adapters change a handful
+     of matrices out of hundreds. Re-hashing and re-signing the entire 7 GB file
+     for a 40 MB change is wasteful.
+
+  3. THEY ARE A DESERIALISATION ATTACK SURFACE.  The most common real-world
+     supply-chain attack on AI today is NOT quantum — it is arbitrary code
+     execution through Python pickle when you call torch.load(). If the code
+     runs during loading, a signature you check afterwards is worthless.
+
+Our answers, in order: content-addressed off-chain storage; a per-tensor Merkle
+tree so derivatives re-sign only changed leaves; and an SDK that refuses
+pickle-backed formats outright, accepting only safetensors and ONNX.
+
+
+--------------------------------------------------------------------------------
+1.5  THE FOUR OBJECTIVES (from the paper, Section 1.4)
+--------------------------------------------------------------------------------
+
+  O1  INTEGRATED DESIGN
+      Compose FIPS 204 ML-DSA-65, a Fabric/Ethereum dual-layer ledger and IPFS
+      content addressing into one deployable architecture.
+
+  O2  ENFORCED, NOT ADVERTISED  ←── the most important one
+      Verify the post-quantum signature as an ENDORSEMENT CONDITION inside
+      Fabric chaincode, so an invalid signature cannot be committed at all.
+      Most prior work merely stores the public key on-chain and leaves
+      verification optional and client-side. Ours makes it structural.
+
+  O3  AI-SPECIFIC TAMPER LOCALISATION
+      Replace flat whole-file hashing with a per-tensor Merkle tree, enabling
+      single-layer tamper identification, streaming verification without full
+      download, and cheap delta-signing of derivatives.
+
+  O4  HONEST RESIDUAL-RISK ACCOUNTING
+      Document the boundary of the quantum guarantee instead of overstating it,
+      including the secp256k1 dependency of the Ethereum anchor transaction.
+
+
+--------------------------------------------------------------------------------
+1.6  SYSTEM ARCHITECTURE — SEVEN COMPONENTS
+--------------------------------------------------------------------------------
+
+Flow is "publish-then-verify":
+
+  [1] Signer CLI          ML-DSA-65 + Ed25519 composite signing
+  [2] Merkle Hasher       per-tensor SHA-256 leaves → binary Merkle tree
+  [3] IPFS (Kubo)         content-addressed storage, CIDv1 dag-pb
+  [4] Fabric Gateway      gRPC transaction submission
+  [5] Fabric Chaincode    *** VERIFY — ENFORCED *** ← the critical component
+  [6] Anchor Contract     Ethereum; stores commitments ONLY, never verifies
+  [7] Consumer SDK        re-verifies on fetch; refuses to return a model object
+                          if any check fails
+
+CRITICAL POINT FOR THE VIVA:
+Verification happens at [5], not only at [7]. That is the whole thesis.
+  - Fabric ENFORCES: an invalid signature is rejected during endorsement and
+    never enters the ledger. Cost: ~0.3 ms in Go with the CIRCL library, and
+    Fabric has no gas metering, so the check is free.
+  - Ethereum RECORDS: verifying a 3,309-byte lattice signature in EVM opcodes
+    would be prohibitively expensive, so the contract stores five fixed-size
+    bytes32 commitments and nothing more.
+
+
+--------------------------------------------------------------------------------
+1.7  THE CRYPTOGRAPHY, PRECISELY
+--------------------------------------------------------------------------------
+
+CHOSEN PARAMETER SET: ML-DSA-65, NIST Security Category 3
+(comparable to AES-192 key search, roughly 2^192 classical effort)
+
+  Parameter Set   Level        Public Key   Private Key   Signature   Round-3 sig
+  ML-DSA-44       Category 2   1,312 B      2,560 B       2,420 B     2,420 B
+  ML-DSA-65  ←    Category 3   1,952 B      4,032 B       3,309 B     3,293 B
+  ML-DSA-87       Category 5   2,592 B      4,896 B       4,627 B     4,595 B
+
+NOTE: the last column is the SUPERSEDED Round-3 Dilithium value. Many published
+surveys still quote those older numbers. We use the final FIPS 204 figures. If
+an examiner says "I thought Dilithium-3 signatures were 3,293 bytes", that is
+the Round-3 number — FIPS 204 standardised 3,309.
+
+SECURITY BASIS: Module-LWE and Module-SIS — lattice problems for which no
+polynomial-time quantum algorithm is known. Signing uses Fiat-Shamir-with-aborts
+rejection sampling (Lyubashevsky's trapdoor-free construction).
+
+COMPOSITE SIGNATURES:
+  A signature is Ed25519 ‖ ML-DSA-65 concatenated; the verifier requires BOTH to
+  be valid. During the migration window this hedges against an unforeseen break
+  in lattice cryptanalysis. Cost: exactly +64 bytes. Total envelope 3,373 B.
+
+DOMAIN-SEPARATED CONTEXT BINDING:
+  context  = "QRB-v1" ‖ chainID ‖ modelId ‖ version ‖ pkHash
+  leaf_i   = SHA-256( name_i ‖ dtype_i ‖ shape_i ‖ tensor_bytes_i )
+  root     = MerkleRoot( sort_by_name( leaf_0 … leaf_n ) )
+  H_meta   = SHA-256( model_card ‖ dataset_hash ‖ eval_metrics )
+  signed_μ = SHAKE256( context ‖ root ‖ H_meta )
+
+  Because chainID and version are inside the signed digest, a signature valid
+  for v1 on Fabric is worthless for v2 or on Sepolia. This is what defeats
+  cross-version and cross-chain replay, and the fault-injection page proves it.
+
+  NOTE ON THE REPORT: Section 3.2 and Section 3.3 state μ slightly differently.
+  We unified them into the single formula above. Worth stating one way in the
+  final report.
+
+CONFIDENTIALITY PATH:
+  Weights encrypted with AES-256-GCM; the content-encryption key is wrapped with
+  ML-KEM-768 (FIPS 203) rather than ECDH. ML-KEM-768 public key is 1,184 B and
+  the shared secret is 32 B, which becomes the AES-256 key directly.
+
+
+--------------------------------------------------------------------------------
+1.8  PER-TENSOR MERKLE HASHING — WHY IT MATTERS
+--------------------------------------------------------------------------------
+
+A flat SHA-256 over a serialised model file gives you ONE BIT of information:
+matched, or did not match. It also requires downloading all 7 GB before
+verification can even begin.
+
+Parsing the safetensors container and hashing each named tensor separately, then
+sorting canonically by name and folding into a binary Merkle tree, buys three
+properties a flat hash simply cannot provide:
+
+  TAMPER LOCALISATION   A failed inclusion proof names the exact tensor —
+                        e.g. "layer.2.attn.q_proj.weight" — not just "the file
+                        changed".
+
+  STREAMING VERIFICATION Check each tensor as its bytes arrive and abort at the
+                        first mismatch. In our demo this aborts after ~180 KB of
+                        a 790 KB artefact; at production scale that is the
+                        difference between 200 MB and 7 GB of wasted transfer.
+
+  DELTA PROVENANCE      A LoRA adapter re-signs only the changed leaves and
+                        records a pointer to its parent root, producing a
+                        lineage DAG instead of a flat list of unrelated files.
+
+
+--------------------------------------------------------------------------------
+1.9  THE HONEST LIMITATION (objective O4) — DO NOT HIDE THIS
+--------------------------------------------------------------------------------
+
+The Ethereum anchoring transaction is authorised by msg.sender and is therefore
+signed with secp256k1, which is NOT quantum-safe.
+
+A quantum adversary who recovers a publisher's externally-owned-account key can
+write anchor records. They CANNOT forge the ML-DSA signature those anchors
+reference, so the forged anchors fail verification — but they can still be
+committed to the chain.
+
+  Correct framing: this is a DENIAL-OF-SERVICE and CONFUSION risk,
+                   NOT a forgery-of-provenance risk.
+
+Rated MEDIUM in the STRIDE table, deliberately not argued down to LOW.
+Second MEDIUM risk: unpinned IPFS content is garbage-collected. Content
+addressing guarantees integrity but NOT persistence — hence three pinning nodes
+plus a Filecoin storage deal.
+
+Presenting this honestly is a strength, not a weakness. Examiners respect a
+project that states its own boundary.
+
+
+================================================================================
+PART 2 — WHAT WE HAVE IMPLEMENTED
+================================================================================
+
+--------------------------------------------------------------------------------
+2.1  SUMMARY
+--------------------------------------------------------------------------------
+
+A fully working browser-based reference implementation and demonstration
+workbench. All four user journeys specified in Section 3.6 of the paper are
+implemented, plus two extra pages covering the Section 3.7 evaluation
+methodology.
+
+THE SINGLE MOST IMPORTANT FACT:
+The cryptography is REAL, not simulated. ML-DSA-65 signing and verification,
+Ed25519, SHAKE256, SHA-256, ML-KEM-768 and AES-256-GCM all genuinely execute in
+the browser. Nothing is faked or hardcoded. When the demo rejects a corrupted
+signature, it is a genuine lattice verification failure.
+
+
+--------------------------------------------------------------------------------
+2.2  REAL vs SIMULATED — BE PRECISE ABOUT THIS
+--------------------------------------------------------------------------------
+
+  COMPONENT                              STATUS      IMPLEMENTATION
+  ------------------------------------   ---------   --------------------------
+  ML-DSA-65 sign / verify                REAL        @noble/post-quantum
+  Ed25519 composite half                 REAL        @noble/curves
+  SHAKE256 context binding               REAL        @noble/hashes
+  SHA-256 per-tensor leaves              REAL        @noble/hashes
+  ML-KEM-768 encapsulate/decapsulate     REAL        @noble/post-quantum
+  AES-256-GCM payload encryption         REAL        WebCrypto SubtleCrypto
+  safetensors container parsing          REAL        our code (src/lib/merkle.js)
+  Per-tensor Merkle tree + proofs        REAL        our code
+  CIDv1 dag-pb base32 encoding           REAL        our code (src/lib/ipfs.js)
+  EVM gas cost model                     REAL calc   derived, not hardcoded
+  ------------------------------------   ---------   --------------------------
+  Fabric peers / MSP / endorsement       SIMULATED   src/lib/ledger.js
+  Ethereum anchor contract               SIMULATED   src/lib/ledger.js
+  IPFS node                              IN-MEMORY   src/lib/ipfs.js
+
+The simulated layers reproduce the DECISION LOGIC of the paper faithfully —
+every require() statement, the MSP gatekeeping, the endorsement policy
+AND(Org1MSP.peer, Org2MSP.peer), the gas arithmetic. They run in the browser
+rather than against a live peer, but the signatures they check are genuine.
+
+HOW TO SAY THIS IF ASKED:
+"The trust decisions are real cryptography. The network transport is simulated.
+ Moving to a live Fabric peer means swapping the transport, not the logic."
+
+
+--------------------------------------------------------------------------------
+2.3  VERIFIED AGAINST THE PAPER'S OWN NUMBERS
+--------------------------------------------------------------------------------
+
+The automated test suite asserts, at runtime, that our implementation produces
+exactly the values in Table 3.1:
+
+  ML-DSA-65 public key  = 1,952 bytes   ✓ matches FIPS 204
+  ML-DSA-65 private key = 4,032 bytes   ✓ matches FIPS 204
+  ML-DSA-65 signature   = 3,309 bytes   ✓ matches FIPS 204 (not Round-3's 3,293)
+  Composite envelope    = 3,373 bytes   ✓ = 3,309 + 64 Ed25519
+  ML-KEM-768 public key = 1,184 bytes   ✓ matches FIPS 203
+  On-chain pk gas cost  ≈ 1,241,000     ✓ paper says "about 1.2M gas"
+
+If a key size were wrong, the app throws on startup. This is a deliberate
+guard, not decoration.
+
+
+--------------------------------------------------------------------------------
+2.4  THE EIGHT PAGES
+--------------------------------------------------------------------------------
+
+FRAMEWORK
+  1. OVERVIEW           Architecture diagram, immutability paradox, the two
+                        attack classes, FIPS 204 parameter table with live
+                        entropy meters, the four objectives.
+
+  2. THREAT MODEL       Full six-row STRIDE table from Table 3.3, the two MEDIUM
+                        risks highlighted, the stated secp256k1 limitation, the
+                        ERC-4337 and zk-SNARK future directions, in/out of scope.
+
+PIPELINE  (the four user journeys of Section 3.6)
+  3. REGISTER MODEL     The six-stage "Deterministic Pipeline Execution Engine":
+                        parse header → per-tensor Merkle hash (live progress,
+                        tensor by tensor) → IPFS pin → composite sign → Fabric
+                        endorsement → L1 anchor. Shows the per-peer endorsement
+                        log with each check ticked or crossed. Gas comparison
+                        against the rejected on-chain-pubkey design.
+
+  4. VERIFY ARTEFACT    Streaming per-tensor pass/fail ledger, verification
+                        chain, composite signature check, anchor inclusion.
+                        Aborts at the first bad tensor and reports how many
+                        bytes of download were avoided.
+
+  5. LINEAGE            Parent-pointer DAG across versions, base vs derivative
+                        vs revoked, full lineage registry table.
+
+EVALUATION  (Section 3.7)
+  6. FAULT INJECTION    Eight adversarial scenarios, each individually runnable:
+                          - single-bit flip inside a random tensor
+                          - tensor payload reordering
+                          - truncated download
+                          - CID substitution
+                          - cross-version signature replay
+                          - cross-chain signature replay
+                          - unauthorised (unenrolled) publisher
+                          - IPFS garbage collection
+                        All eight are detected; the tampering cases name the
+                        affected tensor.
+
+  7. BENCHMARKS         Live in-browser measurement: ML-DSA-65 vs Ed25519 sign
+                        and verify latency, per-tensor Merkle vs flat SHA-256
+                        throughput across three artefact sizes, gas consumption
+                        computed from the EVM cost model, ML-KEM-768 round trip.
+
+  8. GOVERNANCE         Publisher identity register, key retirement, 2-of-3
+                        Gnosis Safe multisig gate, revocation, contract event log.
+
+
+--------------------------------------------------------------------------------
+2.5  TESTING
+--------------------------------------------------------------------------------
+
+  npm test          45 logic assertions covering parsing, Merkle proofs, format
+                    gatekeeping, key sizes, composite signing, replay resistance,
+                    CID encoding, all four chaincode rejection paths, all four
+                    contract revert paths, fault injection, and the KEM round trip.
+
+  npm run test:render   16 server-side page renders (all 8 pages × empty and
+                        populated ledger states).
+
+  npm run test:all      Both suites.
+
+Current status: 45/45 logic assertions pass, 16/16 renders pass.
+
+
+--------------------------------------------------------------------------------
+2.6  DESIGN IMPLEMENTATION
+--------------------------------------------------------------------------------
+
+The UI implements the Stitch design system in
+templates/.../quantum_resistant_cryptographic_workbench/DESIGN.md exactly:
+
+  - "Technical instrument brutalism + deep terminal minimalism"
+  - Base canvas #0a0d14 with a 24px cyan Cartesian lattice grid at 2% opacity
+  - Strictly segregated semantic accent channels:
+      #6ee7ff cyan   → data, hashes, telemetry
+      #a78bfa violet → post-quantum primitives only
+      #4ade80 green  → valid / pass
+      #fbbf24 amber  → classical cryptographic exposure
+      #fb7185 rose   → critical / rejected
+  - Inter for narrative, JetBrains Mono for all cryptographic values
+  - tabular-nums universally active
+  - Radii: 10px panels, 6px controls, 4px chips. Pill radii (9999px) are
+    PROHIBITED by the system and are not used anywhere.
+  - Depth via 1px borders and tonal surface stepping, never drop shadows
+  - Middle-truncated hashes (0x7f8a…9c41) with click-to-copy
+  - Academic citation pills (§ 3.3 Per-Tensor Merkle) on every panel
+
+NOTE ON THE TEMPLATE: four of the five Stitch screenshots failed to export
+(they are 28-byte "<FIFE Image failed to fetch>" placeholders). Only
+register_model_qrb_pipeline/screen.png downloaded successfully, and the Register
+Model page follows it closely. The other pages were built from DESIGN.md.
+
+Also note: the Stitch mockup's placeholder content says ML-DSA-87 / Category 5 /
+ML-KEM-1024. That is invented filler. We kept OUR paper's actual parameters
+(ML-DSA-65 / Category 3 / ML-KEM-768) and took only the visual system from the
+template.
+
+
+--------------------------------------------------------------------------------
+2.7  TWO BUGS FOUND AND FIXED DURING IMPLEMENTATION
+--------------------------------------------------------------------------------
+
+Worth mentioning if asked "what was hard":
+
+  1. SAFETENSORS ALIGNMENT. Creating a Float32Array view over the data segment
+     threw a RangeError because the segment did not start on a 4-byte boundary.
+     Real safetensors producers pad the JSON header with trailing whitespace to
+     force 8-byte alignment. We now do the same.
+
+  2. AMBIGUOUS μ DEFINITION IN THE PAPER. Section 3.2 and Section 3.3 give
+     different formulations of the signed digest. We unified them. The final
+     report should state it one way.
+
+
+================================================================================
+PART 3 — WHAT WE ARE GOING TO IMPLEMENT
+================================================================================
+
+--------------------------------------------------------------------------------
+3.1  PHASE 1 — REPLACE THE SIMULATED LEDGER WITH LIVE INFRASTRUCTURE
+--------------------------------------------------------------------------------
+
+  HYPERLEDGER FABRIC v2.5 LTS
+    - 2 organisations × 2 peers, 3-node Raft orderer, channel "mlops"
+    - Go chaincode embedding ML-DSA verification via Cloudflare CIRCL
+      (CIRCL gives native Go ML-DSA with no cgo bindings required)
+    - Endorsement policy AND(Org1MSP.peer, Org2MSP.peer)
+    - EVIDENCE TO CAPTURE: peer logs showing endorsement rejection on a
+      corrupted signature
+    - Frontend connects through the Fabric Gateway SDK over gRPC
+
+  ETHEREUM
+    - Solidity 0.8.24 anchor contract deployed to a local Hardhat node
+      (chainId 31337), then to the Sepolia public testnet
+    - Wire ethers.js v6 + MetaMask for real anchor transaction signing
+    - EVIDENCE TO CAPTURE: deployed contract address, anchoring tx hashes,
+      real gas receipts to replace our computed estimates
+
+  IPFS
+    - Kubo v0.28, 3-node private swarm with Pinata fallback pinning
+    - Real chunked UnixFS DAG (our browser node treats the artefact as a single
+      block, which is why the DAG root currently equals the flat SHA-256; a real
+      node chunks at 256 KiB and the roots then diverge)
+    - EVIDENCE TO CAPTURE: CIDv1 values and pin status output
+
+--------------------------------------------------------------------------------
+3.2  PHASE 2 — THE SIGNER CLI AND CONSUMER SDK
+--------------------------------------------------------------------------------
+
+  SIGNER CLI
+    - liboqs / python-oqs for keypair generation and composite signing
+    - PyNaCl for the Ed25519 half
+    - Validate the per-tensor Merkle hasher against a genuine 1 GB model
+
+  CONSUMER SDK (Python package)
+    - fetch by CID, stream-verify tensors, check ML-DSA signature, confirm
+      anchor inclusion proof
+    - MUST refuse to return a model object if any check fails
+    - Hard rejection of pickle-backed formats before deserialisation
+
+--------------------------------------------------------------------------------
+3.3  PHASE 3 — SCALE VALIDATION
+--------------------------------------------------------------------------------
+
+  - Benchmark per-tensor Merkle construction at 10 MB, 100 MB, 1 GB and 7 GB
+    against flat SHA-256 (we currently test up to ~1 MB in-browser)
+  - Fabric endorsement latency and TPS with signature verification enabled
+    versus disabled, to isolate the true cost of enforcement
+  - Amortised gas cost per model when N state transitions are batched under a
+    single Merkle root
+  - Replace all browser-JS timings with Go CIRCL timings (expect roughly 0.3 ms
+    per verification, far faster than our JS upper bound)
+
+--------------------------------------------------------------------------------
+3.4  PHASE 4 — CLOSING THE SECP256K1 GAP  (the main research direction)
+--------------------------------------------------------------------------------
+
+This is the answer to the one MEDIUM risk we cannot currently mitigate.
+
+  OPTION A — ERC-4337 SMART ACCOUNT
+    Replace the externally-owned account with a smart contract account carrying
+    an ML-DSA verifier module, so the anchor transaction itself is authorised
+    post-quantum rather than by a secp256k1 signature.
+
+  OPTION B — zk-SNARK VERIFICATION
+    Prove correct off-chain lattice verification and have the EVM check only a
+    succinct proof, avoiding the prohibitive cost of running ML-DSA in EVM
+    opcodes directly.
+
+Both are identified in the paper as future work. Neither is claimed as
+implemented — say so plainly if asked.
+
+--------------------------------------------------------------------------------
+3.5  EXPLICITLY OUT OF SCOPE  (Section 1.5)
+--------------------------------------------------------------------------------
+
+Know these, because "why didn't you do X" is a common question:
+
+  - Ethereum mainnet deployment with real value
+  - FPGA/ASIC acceleration of lattice polynomial arithmetic
+  - Physical quantum hardware benchmarking
+  - Zero-knowledge proof circuits for on-chain ML-DSA verification
+    (identified as future work, not attempted)
+
+
+================================================================================
+PART 4 — HOW TO PRESENT THE WEBSITE
+================================================================================
+
+--------------------------------------------------------------------------------
+4.0  BEFORE YOU START
+--------------------------------------------------------------------------------
+
+  cd /home/rag/Desktop/Madhusudhan/Projects/Quantum_Resistant_Blockchain/web
+  npm run dev
+  # open http://localhost:5173
+
+PRE-FLIGHT CHECKLIST
+  [ ] Run `npm run test:all` once beforehand — being able to say "45 assertions
+      and 16 renders pass" is a strong opening credential
+  [ ] Browser zoom at 100%, window maximised (layout is designed for >=1440px)
+  [ ] Let the boot screen finish — it is generating three real ML-DSA keypairs
+  [ ] Do a full dry run once; the demo has live timings and you want to know
+      roughly how long each stage takes on your machine
+  [ ] Have the DA2 PDF open in a second tab in case of section references
+
+TIMING GUIDE
+  Full demo         ~12 minutes
+  Compressed demo   ~6 minutes  (Overview → Register → Faults → limitation)
+  Lightning demo    ~3 minutes  (Register pipeline → Fault injection only)
+
+
+--------------------------------------------------------------------------------
+STEP 1 — OVERVIEW PAGE — FRAME THE PROBLEM   (~2 min)
+--------------------------------------------------------------------------------
+
+Land on Overview. Do not rush past this; the problem framing is what makes the
+rest land.
+
+  SAY:
+  "AI models are signed today with RSA or ECDSA. Shor's algorithm breaks both.
+   But the real problem isn't that future models become insecure — it's that
+   PAST ones do."
+
+  POINT AT: the violet "immutability paradox" callout at the top.
+
+  SAY:
+  "A blockchain stores the public key permanently and publicly. When a quantum
+   computer arrives, an attacker reads that key straight off the ledger, derives
+   the private key, and forges a signature that appears to date from before the
+   break. And because the chain is immutable, nobody can remove it. The property
+   that makes blockchain trustworthy is exactly what makes the damage permanent."
+
+  SCROLL TO: the architecture diagram.
+
+  SAY, pointing at component [5]:
+  "Seven components. The one that matters is [5], the Fabric chaincode. Notice
+   the green annotation — an invalid signature is rejected HERE, during
+   endorsement, and never enters the ledger. Most prior work stores the public
+   key on-chain and leaves verification optional and client-side. We make it
+   structural. That's objective O2: enforced, not advertised."
+
+  POINT AT component [6], amber:
+  "And note we've coloured the anchor contract amber, because its transaction is
+   still secp256k1-signed. We'll come back to that — we don't hide it."
+
+  SCROLL TO: the FIPS 204 parameter table.
+
+  SAY:
+  "We selected ML-DSA-65, Category 3 — roughly AES-192 equivalent. Note the last
+   column: many published surveys still quote the superseded Round-3 Dilithium
+   sizes. 3,293 versus the standardised 3,309. We use the FIPS 204 figures."
+
+
+--------------------------------------------------------------------------------
+STEP 2 — REGISTER MODEL — THE MAIN EVENT   (~4 min)
+--------------------------------------------------------------------------------
+
+Click "Register Model" in the sidebar. This is your centrepiece.
+
+  2a. GENERATE AN ARTEFACT
+      Select "Small — 30 tensors", click GENERATE.
+
+      SAY: "That's a genuine safetensors container — real header, real offsets,
+            real float32 tensors. Not a mock object."
+
+  2b. POINT OUT THE RIGHT-HAND PANEL BEFORE RUNNING
+      SAY: "1,952-byte public key, 4,032-byte private key, 3,309-byte signature
+            capacity. Those are the exact FIPS 204 Table 3.1 values, and the app
+            asserts them at runtime — if they were wrong it would refuse to
+            start. This is real ML-DSA, generated in this browser a moment ago."
+
+      POINT AT the segmented entropy meter: "Category 3 of the NIST scale."
+
+  2c. POINT AT THE DOMAIN-SEPARATED DIGEST PANEL
+      SAY: "This is the formula that defeats replay. chainID and version are
+            baked into the signed digest. A signature valid for v1 on Fabric is
+            mathematically worthless for v2, or on any other chain. We'll prove
+            that in a minute."
+
+  2d. RUN THE PIPELINE
+      Click RUN PIPELINE. Narrate as it goes — stage 2 is the visual highlight.
+
+      STAGE 2 (watch the tensor counter climb 1/30 … 30/30):
+      SAY: "Each tensor hashed independently — name, dtype, shape and bytes —
+            then sorted canonically and folded into a Merkle tree. A flat
+            SHA-256 would give one bit of output: matched or didn't. This tells
+            us WHICH tensor."
+
+      STAGE 4:
+      SAY: "Composite signature. Ed25519 concatenated with ML-DSA-65 — the
+            verifier requires both. That's a hedge against an unforeseen break
+            in lattice cryptanalysis during the migration window, and it costs
+            exactly 64 extra bytes."
+
+      STAGE 5 — PAUSE HERE, THIS IS THE THESIS:
+      SAY: "Fabric endorsement. Two organisations, each independently
+            recomputing the digest and verifying both signature halves. The
+            policy is AND — both must endorse. This is the enforcement point."
+
+      STAGE 6:
+      SAY: "The anchor. Note it stores commitments only — it never verifies the
+            lattice signature, because doing that in EVM opcodes would be
+            prohibitively expensive."
+
+  2e. SCROLL TO THE RESULTS
+      POINT AT the gas comparison panel.
+      SAY: "130,000 gas for the anchor. If we'd stored the 1,952-byte public key
+            on-chain — which was our first design — that's 61 cold storage slots,
+            about 1.24 million gas. Roughly 90% saved by keeping only the hash
+            on-chain and the key itself on IPFS. That was one of three defects we
+            removed when we revised the contract."
+
+      POINT AT the peer endorsement log.
+      SAY: "Every check, per peer, individually ticked. MSP identity, version
+            rules, digest recomputation, key binding, then both signatures."
+
+
+--------------------------------------------------------------------------------
+STEP 3 — VERIFY ARTEFACT — STREAMING VERIFICATION   (~1.5 min)
+--------------------------------------------------------------------------------
+
+Click "Verify Artefact", then RUN VERIFICATION.
+
+  SAY: "This is the consumer side. Watch the right-hand ledger — tensors verify
+        one at a time as bytes arrive. It is streaming, not batch."
+
+  SAY: "And critically, the SDK refuses to return a model object if ANY check
+        fails. It doesn't warn you and hand over the model anyway."
+
+  POINT AT the verification chain on the left: CID retrieval, revocation status,
+  anchor inclusion, per-tensor Merkle, then both signature halves.
+
+
+--------------------------------------------------------------------------------
+STEP 4 — FAULT INJECTION — THE PROOF   (~2.5 min)
+--------------------------------------------------------------------------------
+
+Click "Fault Injection". This is your second-strongest page — it converts claims
+into demonstrated results.
+
+  SAY: "Eight attacks. The paper's bar isn't just detection — the per-tensor test
+        must also name the affected layer."
+
+  Click RUN ALL. Let it work through. Then walk the results:
+
+  ROW 1 — SINGLE-BIT FLIP:
+    POINT AT the violet "↳ localised to layer.X.attn.q_proj.weight" line.
+    SAY: "One bit flipped in a 790 KB file, and we can name the exact tensor.
+          A flat hash would only say 'the file changed'. Note also it aborted
+          after about 180 KB — it didn't need the rest."
+
+  ROW 5 — CROSS-VERSION REPLAY:
+    SAY: "Here we took the v1 signature and presented it for v2. Both halves
+          fail, because the version sits inside the signed context string."
+
+  ROW 6 — CROSS-CHAIN REPLAY:
+    SAY: "Same signature replayed onto Sepolia's chainID. Fails for the same
+          reason. That's domain separation working."
+
+  ROW 7 — UNAUTHORISED PUBLISHER — THE SUBTLE ONE:
+    SAY: "This one is worth pausing on. The signature here is CRYPTOGRAPHICALLY
+          VALID — we generated a real ML-DSA keypair and signed properly. But
+          the identity is enrolled in no MSP, so it's rejected with MSP_DENIED
+          before the signature check is even reached. Valid cryptography from an
+          unknown publisher is still not admissible."
+
+  ROW 8 — IPFS GARBAGE COLLECTION:
+    SAY: "Content addressing guarantees integrity, but NOT persistence. Unpin
+          the block and it's gone. That's why we run three pinning nodes plus a
+          Filecoin deal — and why this risk is rated MEDIUM, not LOW."
+
+
+--------------------------------------------------------------------------------
+STEP 5 — BENCHMARKS — QUANTIFY THE COST   (~1.5 min)
+--------------------------------------------------------------------------------
+
+Click "Benchmarks", run the first two.
+
+  SIGNATURE LATENCY:
+  SAY: "ML-DSA-65 against Ed25519, measured live on this machine. The signature
+        is about 52 times larger — that's the real cost of post-quantum
+        security. But read the RATIO, not the absolute: this is JavaScript. The
+        Go CIRCL library the chaincode uses does a verification in about 0.3 ms."
+
+  MERKLE VS FLAT:
+  SAY: "Per-tensor Merkle versus flat SHA-256 across three artefact sizes. The
+        overhead column is exactly what we pay for tamper localisation and
+        streaming verification. It's a real cost and we quantify it rather than
+        waving it away."
+
+  IF TIME PERMITS, run the ML-KEM round trip:
+  SAY: "And this is the confidentiality path — ML-KEM-768 wrapping an AES-256-GCM
+        key. That addresses harvest-now-decrypt-later, which no signature scheme
+        touches. Different attack, different primitive."
+
+
+--------------------------------------------------------------------------------
+STEP 6 — GOVERNANCE — OPERATIONAL REALISM   (~1 min)
+--------------------------------------------------------------------------------
+
+Click "Governance".
+
+  SAY: "Keys get compromised. Revocation is a first-class operation here."
+
+  DEMO: tick two of the three Safe owners — the button unlocks at threshold.
+  SAY: "2-of-3 Gnosis Safe. One compromised owner can't revoke anything."
+
+  Execute a revocation.
+  SAY: "And note what happened: the version is FLAGGED, not deleted. The record
+        stays on the ledger. That's the point of an append-only log — we don't
+        rewrite history, we annotate it."
+
+
+--------------------------------------------------------------------------------
+STEP 7 — THREAT MODEL — CLOSE ON HONESTY   (~1.5 min)
+--------------------------------------------------------------------------------
+
+Finish here. Do not skip it — this is what separates a serious project from a
+demo.
+
+  SAY: "Full STRIDE assessment. Four risks are LOW. Two are MEDIUM, and we
+        deliberately did not argue them down."
+
+  POINT AT the amber callout.
+
+  SAY: "Here's the honest limitation. The Ethereum anchor transaction is
+        authorised by msg.sender, so it's signed with secp256k1 — which is
+        exactly what we said was broken at the start of this presentation.
+
+        A quantum adversary who recovers a publisher's account key CAN write
+        anchor records. They CANNOT forge the ML-DSA signature those anchors
+        reference — so the forged anchors fail verification. But they can still
+        be committed.
+
+        So it's a denial-of-service and confusion risk, not a
+        forgery-of-provenance risk. We could have hidden this. We documented it
+        instead — that's objective O4."
+
+  CLOSING LINE:
+  "Closing that gap needs either an ERC-4337 smart account with an ML-DSA
+   verifier module, or a zk-SNARK so the EVM only checks a succinct proof.
+   Both are identified as future work. Neither is claimed as implemented."
+
+
+--------------------------------------------------------------------------------
+4.8  LIKELY QUESTIONS AND HOW TO ANSWER THEM
+--------------------------------------------------------------------------------
+
+Q: "Is the cryptography real or simulated?"
+A: "The cryptography is real — ML-DSA-65, Ed25519, SHAKE256, ML-KEM-768 and
+    AES-256-GCM all genuinely execute in the browser via the noble libraries.
+    The Fabric peers, the Solidity contract and the IPFS daemon are simulated in
+    JavaScript, but they reproduce the paper's decision logic exactly, and the
+    signatures they check are genuine. When you saw that corrupted signature
+    rejected, that was a real lattice verification failure."
+
+Q: "Why ML-DSA-65 and not 87?"
+A: "Category 3 gives roughly AES-192-equivalent security, which is the standard
+    recommendation for long-lived data. ML-DSA-87 would add about 1,300 bytes
+    per signature for security we don't need at this threat level. The
+    architecture is parameter-agnostic — swapping to 87 is a one-line change."
+
+Q: "Why two ledgers? Isn't that over-engineering?"
+A: "They do different jobs. Fabric is permissioned, has no gas metering, and can
+    therefore afford to verify a 3,309-byte lattice signature on every
+    transaction — that's the enforcement layer. Ethereum gives public,
+    tamper-evident proof of existence that doesn't depend on trusting the Fabric
+    consortium. Doing the signature check on Ethereum would be prohibitively
+    expensive; doing public anchoring on Fabric is impossible because it's
+    permissioned."
+
+Q: "Why not just put the model on-chain?"
+A: "A 7 GB model at Ethereum's storage costs is astronomically expensive — our
+    benchmark shows that even a 1,952-byte public key costs about 1.24 million
+    gas. So the artefact goes to content-addressed storage and only fixed-size
+    commitments go on-chain."
+
+Q: "What's the performance penalty?"
+A: "Two separate costs. The signature is about 52× larger than Ed25519 — that's
+    unavoidable with lattice cryptography. Verification in Go with CIRCL is
+    about 0.3 ms, which is negligible inside Fabric endorsement since there's no
+    gas metering. The per-tensor Merkle overhead versus a flat hash is shown
+    live on the Benchmarks page."
+
+Q: "Isn't the quantum threat overhyped / decades away?"
+A: "Possibly — but that's precisely why this matters now. The attack is
+    retrospective. A signature written today sits on an immutable ledger waiting
+    to be broken in 2035. You cannot retrofit the protection later, because you
+    cannot rewrite the chain. NIST finalised FIPS 204 in August 2024 specifically
+    because migration has to start before the threat materialises."
+
+Q: "What's the weakest part of your system?"
+A: "The secp256k1-signed anchor transaction, and we say so in the report. A
+    quantum adversary could write forged anchors — they'd fail verification but
+    they'd still be committed. It's a DoS and confusion risk rather than a
+    forgery risk. ERC-4337 or zk-SNARKs close it, and both are future work."
+
+Q: "Why does pickle matter? This is a quantum project."
+A: "Because the most common real supply-chain attack on AI today isn't quantum
+    at all — it's arbitrary code execution through torch.load's pickle
+    deserialisation. If the code runs while loading, a signature you verify
+    afterwards is worthless. So the SDK refuses pickle-backed formats outright
+    and accepts only safetensors and ONNX. It'd be incoherent to solve a 2035
+    threat while leaving the 2026 one open."
+
+Q: "How is this different from just signing with Dilithium on a blockchain?"
+A: "That composition is already anticipated in the literature. Our contribution
+    is the harder problem: enforcing post-quantum authorship inside a
+    permissioned ledger's endorsement policy, at a payload scale where the
+    artefact cannot go on-chain, with verification granularity matched to the
+    internal structure of neural network files. It's the per-tensor Merkle tree
+    and the chaincode-level enforcement that are novel, not the use of ML-DSA."
+
+
+--------------------------------------------------------------------------------
+4.9  THINGS TO AVOID SAYING
+--------------------------------------------------------------------------------
+
+  DON'T say "quantum-proof" or "unbreakable". Say "quantum-resistant" or
+  "post-quantum". No one claims lattice problems are unconditionally hard.
+
+  DON'T claim the whole system is quantum-safe. The anchor transaction isn't,
+  and an examiner who spots that after you've overclaimed will not be kind.
+
+  DON'T call the Fabric/Ethereum/IPFS layers "implemented" without qualifying
+  that they're simulated in the browser. Be precise — it costs nothing and
+  protects your credibility.
+
+  DON'T quote the Round-3 Dilithium signature sizes. Use FIPS 204's values.
+
+  DON'T say the browser benchmark numbers are the system's real performance.
+  They're a JavaScript upper bound; Go CIRCL is far faster.
+
+
+================================================================================
+QUICK REFERENCE
+================================================================================
+
+RUN
+  cd web && npm install && npm run dev      →  http://localhost:5173
+  npm run test:all                          →  45 assertions + 16 renders
+
+KEY NUMBERS
+  ML-DSA-65        pk 1,952 B · sk 4,032 B · sig 3,309 B · Category 3
+  Composite        3,373 B  (ML-DSA-65 + 64 B Ed25519)
+  ML-KEM-768       pk 1,184 B · shared secret 32 B
+  anchorModel()    ~130,000 gas
+  pk on-chain      ~1,241,000 gas  (61 cold SSTOREs — the design we rejected)
+  Fabric verify    ~0.3 ms in Go with CIRCL
+
+THE THREE SENTENCES THAT MATTER MOST
+  1. "Immutability means a forged signature, once written, can never be removed
+      — so post-quantum migration has to happen before the threat arrives, not
+      after."
+  2. "We enforce the signature inside the chaincode, so an invalid one cannot be
+      committed at all — that's the difference between enforced and advertised."
+  3. "The anchor transaction is still secp256k1-signed, and we documented that
+      rather than hiding it."
+
+FILE MAP
+  web/src/lib/crypto.js        §3.2  ML-DSA-65, composite signatures, μ binding
+  web/src/lib/merkle.js        §3.3  safetensors parsing, per-tensor Merkle
+  web/src/lib/ipfs.js          §3.4  CIDv1, pinning, garbage collection
+  web/src/lib/ledger.js        §3.5  chaincode endorsement, anchor contract, gas
+  web/src/pages/Faults.jsx     §3.7  fault injection scenarios
+  web/src/pages/ThreatModel.jsx §3.8 STRIDE table and residual risk
+
+================================================================================
